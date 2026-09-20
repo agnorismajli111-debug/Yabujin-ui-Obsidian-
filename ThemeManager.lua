@@ -1,0 +1,792 @@
+local cloneref = (cloneref or clonereference or function(instance: any)
+    return instance
+end)
+local clonefunction = (clonefunction or copyfunction or function(func) 
+    return func 
+end)
+
+local HttpService: HttpService = cloneref(game:GetService("HttpService"))
+local isfolder, isfile, listfiles = isfolder, isfile, listfiles
+
+if typeof(clonefunction) == "function" then
+
+    local
+        isfolder_copy,
+        isfile_copy,
+        listfiles_copy = clonefunction(isfolder), clonefunction(isfile), clonefunction(listfiles)
+
+    local isfolder_success, isfolder_error = pcall(function()
+        return isfolder_copy("test" .. tostring(math.random(1000000, 9999999)))
+    end)
+
+    if isfolder_success == false or typeof(isfolder_error) ~= "boolean" then
+        isfolder = function(folder)
+            local success, data = pcall(isfolder_copy, folder)
+            return (if success then data else false)
+        end
+
+        isfile = function(file)
+            local success, data = pcall(isfile_copy, file)
+            return (if success then data else false)
+        end
+
+        listfiles = function(folder)
+            local success, data = pcall(listfiles_copy, folder)
+            return (if success then data else {})
+        end
+    end
+end
+
+local SchemeIndexes = { "FontColor", "MainColor", "AccentColor", "BackgroundColor", "OutlineColor" }
+local ThemeManager = {
+    Library = nil,
+
+    Folder = "ObsidianLibSettings",
+
+    AppliedToTab = false,
+    DefaultThemeName = nil,
+
+    -- ============================================================
+    -- 新默认主题：暗紫底 + 亮粉强调 + 白字（透明背景下依然清晰）
+    -- ============================================================
+    BuiltInThemes = {
+        ["默认"] = {
+            1,
+            {
+                FontColor = "ffffff",
+                MainColor = "241c28",
+                AccentColor = "ff7da6",
+                BackgroundColor = "141018",
+                OutlineColor = "3c2c3c",
+                WindowTransparency = 25,
+            },
+        },
+    }
+}
+
+-- ============================================================
+-- SetLibrary 时自动应用默认主题（含透明度）
+-- ============================================================
+function ThemeManager:SetLibrary(Library)
+    ThemeManager.Library = Library
+
+    local DefaultTheme = ThemeManager.BuiltInThemes["默认"]
+    if DefaultTheme then
+        local Colors = DefaultTheme[2]
+        for Index, HexValue in Colors do
+            if Index == "WindowTransparency" then
+                Library.Scheme.WindowTransparency = tonumber(HexValue) or 0
+                continue
+            end
+
+            Library.Scheme[Index] = Color3.fromHex(HexValue)
+        end
+        Library:UpdateColorsUsingRegistry()
+    end
+end
+
+local function Trim(Text: string)
+    return Text:match("^%s*(.-)%s*$")
+end
+
+local function IsStringEmpty(String: string): boolean
+    return if typeof(String) == "string" then Trim(String) == "" else true
+end
+
+local function IsValidFolderPath(Name: string): boolean
+    return typeof(Name) == "string" and (
+        Trim(Name) ~= "" and
+        not Name:match("^%s*$") and
+        not Name:find('[<>:"|%?%*%z]')
+    )
+end
+
+local function SplitPath(Path: string): {string}
+    local Result = {}
+    local Current = ""
+
+    for Part in string.gmatch(Path, "[^/]+") do
+        Current = if Current == "" then Part else (Current .. "/" .. Part)
+        table.insert(Result, Current)
+    end
+
+    return Result
+end
+
+local function GetFolderPath(): false | string
+    if IsStringEmpty(ThemeManager.Folder) then
+        return false
+    end
+
+    return string.format("%s/themes", ThemeManager.Folder)
+end
+
+local GetCurrentThemesPath = GetFolderPath
+
+local function GetThemePath(ThemeName: string): false | string
+    local CurrentThemesPath = GetCurrentThemesPath()
+    return if CurrentThemesPath == false then false else string.format("%s/%s.json", CurrentThemesPath, ThemeName)
+end
+
+local function DoesThemeExist(ThemeName: string, IncludeBuiltIn: boolean): boolean
+    if ThemeManager.BuiltInThemes[ThemeName] then
+        return true
+    end
+
+    local ThemePath = GetThemePath(ThemeName)
+    return if ThemePath == false then false else isfile(ThemePath)
+end
+
+local function GetDefaultThemePath(): false | string
+    local CurrentThemesPath = GetCurrentThemesPath()
+    return if CurrentThemesPath == false then false else string.format("%s/default.txt", CurrentThemesPath)
+end
+
+function ThemeManager:GetPaths(): {string}
+    local FolderPath = GetFolderPath()
+    return if FolderPath == false then {} else SplitPath(FolderPath)
+end
+
+function ThemeManager:BuildFolderTree(SkipWhenCreated: boolean?)
+    local Paths = ThemeManager:GetPaths()
+    if #Paths == 0 then
+        return false
+    end
+
+    if SkipWhenCreated == true then
+        if isfolder(Paths[1]) then
+            return true
+        end
+    end
+
+    for _, Path in Paths do
+        if isfolder(Path) then continue end
+
+        makefolder(Path)
+    end
+
+    return true
+end
+
+function ThemeManager:CheckFolderTree()
+    return ThemeManager:BuildFolderTree(true)
+end
+
+function ThemeManager:SetFolder(Folder: string)
+    assert(IsValidFolderPath(Folder), "无效的路径")
+
+    ThemeManager.Folder = Folder
+    ThemeManager:BuildFolderTree()
+end
+
+function ThemeManager:ReloadCustomThemes()
+    local SettingsPath = GetCurrentThemesPath()
+    if SettingsPath == false then
+        return {}
+    end
+
+    local SuccessList, Files = pcall(listfiles, SettingsPath)
+    if not (SuccessList and typeof(Files) == "table") then
+        ThemeManager.Library:Notify(string.format("加载主题列表失败：%s", tostring(Files)))
+        return {}
+    end
+
+    local FileNames = {}
+    for _, FilePath in Files do
+        local RawFileName = FilePath:match("(.+)%..+$")
+        if not RawFileName then continue end
+
+        local Position = RawFileName:gsub("\\", "/"):find("/[^/]*$")
+        local FileName = Position and RawFileName:sub(Position + 1) or RawFileName
+        if not FileName or FileName == "default" then continue end
+
+        table.insert(FileNames, FileName)
+    end
+
+    return FileNames
+end
+
+function ThemeManager:GetCustomTheme(ThemeName: string): any
+    if IsStringEmpty(ThemeName) then
+        return nil
+    end
+
+    local ThemePath = GetThemePath(ThemeName)
+    if ThemePath == false or not isfile(ThemePath) then
+        return nil
+    end
+
+    local SuccessRead, Content = pcall(readfile, ThemePath)
+    if not SuccessRead then
+        return nil
+    end
+
+    local SuccessDecode, Decoded = pcall(HttpService.JSONDecode, HttpService, Content)
+    if not SuccessDecode or typeof(Decoded) ~= "table" then
+        return nil
+    end
+
+    return Decoded
+end
+
+-- ============================================================
+-- 保存自定义主题（现在会保存窗口透明度）
+-- ============================================================
+function ThemeManager:SaveCustomTheme(ThemeName: string): any
+    if IsStringEmpty(ThemeName) then
+        return false, "无效的主题名称"
+    end
+
+    if string.lower(ThemeName) == "default" then
+        return false, "无效的主题名称"
+    end
+
+    local ThemePath = GetThemePath(ThemeName)
+    if ThemePath == false then
+        return false, "无效的主题名称"
+    end
+
+    ThemeManager:CheckFolderTree()
+
+    local Library = ThemeManager.Library
+    local ThemeData = {}
+
+    for _, SchemeIndex in SchemeIndexes do
+        ThemeData[SchemeIndex] = Library.Options[SchemeIndex].Value:ToHex()
+    end
+
+    local TransparencyOption = Library.Options.WindowTransparency
+    if TransparencyOption then
+        ThemeData.WindowTransparency = TransparencyOption.Value
+    end
+
+    local SuccessEncode, EncodedData = pcall(HttpService.JSONEncode, HttpService, ThemeData)
+    if not SuccessEncode then
+        return false, "数据编码失败"
+    end
+
+    local SuccessWrite, ErrorMessage = pcall(writefile, ThemePath, EncodedData)
+    if not SuccessWrite then
+        return false, "写入主题文件失败：" .. tostring(ErrorMessage)
+    end
+
+    return true
+end
+
+function ThemeManager:Delete(ThemeName: string): (boolean | string?)
+    if IsStringEmpty(ThemeName) then
+        return false, "未选择任何主题"
+    end
+
+    local ThemePath = GetThemePath(ThemeName)
+    if ThemePath == false or not isfile(ThemePath) then
+        return false, "主题文件不存在"
+    end
+
+    local SuccessDelete, ErrorMessage = pcall(delfile, ThemePath)
+    if not SuccessDelete then
+        return false, "删除主题文件失败：" .. tostring(ErrorMessage)
+    end
+
+    if ThemeName == ThemeManager.DefaultThemeName then
+        ThemeManager:DeleteDefaultTheme()
+    end
+
+    return true
+end
+
+function ThemeManager:GetDefaultTheme(): (string, boolean, string?)
+    ThemeManager:CheckFolderTree()
+
+    local DefaultThemePath = GetDefaultThemePath()
+    if DefaultThemePath == false then
+        return "none", false, "无效的路径"
+    end
+
+    if not isfile(DefaultThemePath) then
+        return "none", false, "未设置默认主题"
+    end
+
+    local SuccessRead, DefaultThemeName = pcall(readfile, DefaultThemePath)
+    if not (SuccessRead and typeof(DefaultThemeName) == "string") then
+        return "none", false, DefaultThemeName
+    end
+
+    local ConfigExists = DoesThemeExist(DefaultThemeName, true)
+    if not ConfigExists then
+        return "none", false, "主题文件未找到"
+    end
+
+    ThemeManager.DefaultThemeName = DefaultThemeName
+    return DefaultThemeName, true
+end
+
+function ThemeManager:SetDefaultTheme(Theme: any)
+    assert(ThemeManager.Library, "未设置库实例，请先调用 ThemeManager:SetLibrary(Library)")
+    assert(not ThemeManager.AppliedToTab, "将 ThemeManager 应用到标签页后无法再设置默认主题")
+
+    local Library = ThemeManager.Library
+    local DefaultThemeData = ThemeManager.BuiltInThemes["默认"][2]
+
+    local LibraryScheme = {}
+    local FinalTheme = {}
+
+    for _, SchemeIndex in SchemeIndexes do
+        local IndexData = Theme[SchemeIndex]
+        local IndexType = typeof(IndexData)
+
+        if IndexType == "Color3" then
+            LibraryScheme[SchemeIndex] = IndexData
+            FinalTheme[SchemeIndex] = string.format("#%s", IndexData:ToHex())
+
+        elseif IndexType == "string" then
+            LibraryScheme[SchemeIndex] = Color3.fromHex(IndexData)
+            FinalTheme[SchemeIndex] = if IndexData:sub(1, 1) == "#" then IndexData else string.format("#%s", IndexData)
+
+        else
+            local Value = DefaultThemeData[SchemeIndex]
+            LibraryScheme[SchemeIndex] = Color3.fromHex(Value)
+            FinalTheme[SchemeIndex] = Value
+        end
+    end
+
+    if typeof(Theme.WindowTransparency) == "number" then
+        FinalTheme.WindowTransparency = Theme.WindowTransparency
+        LibraryScheme.WindowTransparency = Theme.WindowTransparency
+    end
+
+    for _, DefaultSchemeColor in { "RedColor", "DestructiveColor", "DarkColor", "WhiteColor" } do
+        LibraryScheme[DefaultSchemeColor] = Library.Scheme[DefaultSchemeColor]
+    end
+
+    Library.Scheme = LibraryScheme
+    ThemeManager.BuiltInThemes["默认"] = { 1, FinalTheme }
+
+    Library:UpdateColorsUsingRegistry()
+end
+
+function ThemeManager:SaveDefault(ThemeName: string): (boolean, string?)
+    if IsStringEmpty(ThemeName) then
+        return false, "未选择任何主题"
+    end
+
+    ThemeManager:CheckFolderTree()
+
+    local DefaultThemePath = GetDefaultThemePath()
+    if DefaultThemePath == false then
+        return false, "无效的路径"
+    end
+
+    if not DoesThemeExist(ThemeName, true) then
+        return false, "主题不存在"
+    end
+
+    local SuccessWrite, ErrorMessage = pcall(writefile, DefaultThemePath, ThemeName)
+    if not SuccessWrite then
+        return false, ErrorMessage
+    end
+
+    ThemeManager.DefaultThemeName = ThemeName
+    return true
+end
+
+function ThemeManager:LoadDefault()
+    local ThemeName, Success, FetchErrorMessage = ThemeManager:GetDefaultTheme()
+    if not Success or FetchErrorMessage then
+        if FetchErrorMessage ~= "未设置默认主题" then
+            ThemeManager.Library:Notify(string.format("应用默认主题失败：%s", FetchErrorMessage))
+        end
+
+        return
+    end
+
+    if not ThemeManager:GetCustomTheme(ThemeName) then
+        return
+    end
+
+    local SuccessLoad, LoadErrorMessage = ThemeManager:ApplyTheme(ThemeName)
+    if not SuccessLoad then
+        ThemeManager.Library:Notify(string.format("应用默认主题失败：%s", LoadErrorMessage))
+        return
+    end
+
+    ThemeManager.Library:Notify(string.format("成功应用默认主题：%q", ThemeName))
+end
+
+function ThemeManager:DeleteDefaultTheme(): (boolean, string?)
+    ThemeManager:CheckFolderTree()
+
+    local DefaultThemePath = GetDefaultThemePath()
+    if DefaultThemePath == false then
+        return false, "无效的路径"
+    end
+
+    if not isfile(DefaultThemePath) then
+        return false, "未设置默认主题"
+    end
+
+    local SuccessDelete, ErrorMessage = pcall(delfile, DefaultThemePath)
+    if not SuccessDelete then
+        return false, ErrorMessage
+    end
+
+    ThemeManager.DefaultThemeName = nil
+    return true
+end
+
+function ThemeManager:ThemeUpdate()
+    local Library = ThemeManager.Library
+
+    for _, SchemeIndex in SchemeIndexes do
+        local Element = Library.Options[SchemeIndex]
+        if not Element then continue end
+
+        Library.Scheme[SchemeIndex] = Element.Value
+    end
+
+    Library:UpdateColorsUsingRegistry()
+end
+
+-- ============================================================
+-- 应用主题（现在支持透明度字段）
+-- ============================================================
+function ThemeManager:ApplyTheme(ThemeName: string)
+    if IsStringEmpty(ThemeName) then
+        return false, "未选择任何主题"
+    end
+
+    local CustomThemeData = ThemeManager:GetCustomTheme(ThemeName)
+    local Data = CustomThemeData or ThemeManager.BuiltInThemes[ThemeName]
+
+    if not Data then
+        return false, "未找到主题"
+    end
+
+    local Library = ThemeManager.Library
+    local ThemeData = CustomThemeData or Data[2]
+
+    for Index, Value in ThemeData do
+        if Index == "WindowTransparency" then
+            local Transparency = tonumber(Value) or 0
+
+            local Element = Library.Options[Index]
+            if Element and Element.Type == "Slider" then
+                Element:SetValue(Transparency)
+            end
+
+            if Library.Window and Library.Window.SetWindowTransparency then
+                Library.Window:SetWindowTransparency(Transparency)
+            end
+
+            Library.Scheme.WindowTransparency = Transparency
+            continue
+        end
+
+        local Element = Library.Options[Index]
+        if Element then
+            Element:SetValue(Color3.fromHex(Value))
+        end
+
+        Library.Scheme[Index] = Color3.fromHex(Value)
+    end
+
+    Library:UpdateColorsUsingRegistry()
+    return true
+end
+
+local function ShowDialog(
+    Condition: () -> boolean,
+
+    Index: string,
+    Title: string,
+    Description: string,
+
+    DestructiveText: string,
+    DestructiveAction: () -> nil
+)
+    if Condition() == false then
+        return DestructiveAction()
+    end
+
+    return ThemeManager.Library.Window:AddDialog(Index, {
+        Title = Title,
+        Description = Description,
+        AutoDismiss = false,
+
+        FooterButtons = {
+            Cancel = {
+                Title = "取消",
+                Variant = "Ghost",
+                Order = 1,
+                Callback = function(Dialog)
+                    Dialog:Dismiss()
+                end
+            },
+
+            DestructiveAction = {
+                Title = DestructiveText,
+                Variant = "Destructive",
+                Order = 2,
+                Callback = function(Dialog)
+                    Dialog:Dismiss()
+                    DestructiveAction()
+                end
+            }
+        }
+    })
+end
+
+function ThemeManager:CreateThemeManager(Themesbox: any)
+    assert(ThemeManager.Library, "未设置库实例，请先调用 ThemeManager:SetLibrary(Library)")
+
+    local CustomThemeList, CustomThemeName, DefaultThemeLabel
+
+    local function RefreshList()
+        CustomThemeList:SetValues(ThemeManager:ReloadCustomThemes())
+        CustomThemeList:SetValue(nil)
+    end
+
+    local function RefreshDefaultThemeLabel()
+        local DefaultThemeName, _Success, _ErrorMessage = ThemeManager:GetDefaultTheme()
+        DefaultThemeLabel:SetText(string.format("当前默认主题：%s", DefaultThemeName))
+        if CustomThemeList then RefreshList() end
+    end
+
+    local function CreateColorOption(Text, SchemeIndex)
+        Themesbox:AddLabel(Text):AddColorPicker(SchemeIndex, {
+            Default = ThemeManager.Library.Scheme[SchemeIndex]
+        })
+        return ThemeManager.Library.Options[SchemeIndex]
+    end
+
+    local BackgroundColor = CreateColorOption("背景颜色", "BackgroundColor")
+    local MainColor = CreateColorOption("主色", "MainColor")
+    local AccentColor = CreateColorOption("强调色", "AccentColor")
+    local OutlineColor = CreateColorOption("边框颜色", "OutlineColor")
+    local FontColor = CreateColorOption("字体颜色", "FontColor")
+
+    -- ============================================================
+    -- 新增：窗口透明度滑块
+    -- ============================================================
+    Themesbox:AddSlider("WindowTransparency", {
+        Text = "窗口透明度",
+        Default = ThemeManager.Library.Scheme.WindowTransparency or 0,
+        Min = 0,
+        Max = 100,
+        Rounding = 0,
+        Suffix = "%",
+        Tooltip = "调节窗口整体的透明度",
+        Callback = function(Value)
+            if ThemeManager.Library.Window and ThemeManager.Library.Window.SetWindowTransparency then
+                ThemeManager.Library.Window:SetWindowTransparency(Value)
+            end
+        end
+    })
+
+    Themesbox:AddDivider()
+
+    CustomThemeName = Themesbox:AddInput("ThemeManager_CustomThemeName", {
+        Text = "自定义主题名称"
+    })
+
+    Themesbox:AddButton("创建主题", function()
+        local Name = CustomThemeName.Value
+        if IsStringEmpty(Name) then
+            ThemeManager.Library:Notify("主题名称不能为空")
+            return
+        end
+
+        if string.lower(Name) == "default" then
+            ThemeManager.Library:Notify("无效的主题名称")
+            return
+        end
+
+        ShowDialog(
+            function(): boolean
+                return ThemeManager:GetCustomTheme(Name) ~= nil
+            end,
+
+            "ThemeManager_CreateTheme",
+            "主题已存在",
+            string.format("名为 %q 的自定义主题已存在。覆盖将用您当前的颜色替换它。", Name),
+
+            "覆盖",
+            function()
+                local Success, ErrorMessage = ThemeManager:SaveCustomTheme(Name)
+                if not Success then
+                    ThemeManager.Library:Notify(string.format("创建主题 %q 失败：%s", Name, ErrorMessage))
+                    return
+                end
+
+                ThemeManager.Library:Notify(string.format("成功创建主题：%q", Name))
+                RefreshList()
+            end
+        )
+    end)
+
+    Themesbox:AddDivider()
+
+    CustomThemeList = Themesbox:AddDropdown("ThemeManager_CustomThemeList", {
+        Text = "自定义主题",
+
+        Values = ThemeManager:ReloadCustomThemes(),
+        AllowNull = true,
+        Multi = false,
+
+        FormatDisplayValue = function(Value: any)
+            if Value == ThemeManager.DefaultThemeName then
+                return string.format("%s (默认)", Value)
+            end
+            return Value
+        end,
+        FormatListValue = function(Value: any)
+            if Value == ThemeManager.DefaultThemeName then
+                return string.format("%s (默认)", Value)
+            end
+            return Value
+        end
+    })
+
+    Themesbox:AddButton("加载主题", function()
+        local Name = CustomThemeList.Value
+        if IsStringEmpty(Name) then
+            ThemeManager.Library:Notify("请先选择一个主题")
+            return
+        end
+
+        ThemeManager:ApplyTheme(Name)
+        ThemeManager.Library:Notify(string.format("成功加载主题：%q", Name))
+    end)
+
+    Themesbox:AddButton("覆盖主题", function()
+        local Name = CustomThemeList.Value
+        if IsStringEmpty(Name) then
+            ThemeManager.Library:Notify("请先选择一个主题")
+            return
+        end
+
+        ShowDialog(
+            function(): boolean
+                return true
+            end,
+
+            "ThemeManager_OverwriteTheme",
+            "覆盖主题",
+            string.format("确定要用当前颜色覆盖 %q 吗？此操作无法撤销。", Name),
+
+            "覆盖",
+            function()
+                ThemeManager:SaveCustomTheme(Name)
+                ThemeManager.Library:Notify(string.format("成功覆盖主题：%q", Name))
+            end
+        )
+    end)
+
+    Themesbox:AddButton("删除主题", function()
+        local Name = CustomThemeList.Value
+        if IsStringEmpty(Name) then
+            ThemeManager.Library:Notify("请先选择一个主题")
+            return
+        end
+
+        ShowDialog(
+            function(): boolean
+                return true
+            end,
+
+            "ThemeManager_DeleteTheme",
+            "删除主题",
+            string.format("确定要删除 %q 吗？此操作无法撤销。", Name),
+
+            "删除",
+            function()
+                local Success, ErrorMessage = ThemeManager:Delete(Name)
+                if not Success then
+                    ThemeManager.Library:Notify(string.format("删除主题失败：%s", ErrorMessage))
+                    return
+                end
+
+                ThemeManager.Library:Notify(string.format("成功删除主题：%q", Name))
+                RefreshDefaultThemeLabel()
+            end
+        )
+    end)
+
+    Themesbox:AddButton("刷新列表", RefreshList)
+
+    Themesbox:AddButton("设为默认", function()
+        local Name = CustomThemeList.Value
+        if IsStringEmpty(Name) then
+            ThemeManager.Library:Notify("请先选择一个主题")
+            return
+        end
+
+        ThemeManager:SaveDefault(Name)
+        ThemeManager.Library:Notify(string.format("成功将默认主题设为：%q", Name))
+        RefreshDefaultThemeLabel()
+    end)
+
+    Themesbox:AddButton("重置默认", function()
+        ShowDialog(
+            function(): boolean
+                return true
+            end,
+
+            "ThemeManager_ResetDefault",
+            "重置默认主题",
+            "确定要清除默认主题吗？下次加载时库将恢复为内置默认主题。",
+
+            "重置",
+            function()
+                local Success, ErrorMessage = ThemeManager:DeleteDefaultTheme()
+                if not Success then
+                    ThemeManager.Library:Notify(string.format("重置默认主题失败：%s", ErrorMessage))
+                    return
+                end
+
+                ThemeManager.Library:Notify("成功重置默认主题")
+                RefreshDefaultThemeLabel()
+            end
+        )
+    end)
+
+    DefaultThemeLabel = Themesbox:AddLabel("当前默认主题：...", true)
+
+    CustomThemeList, CustomThemeName =
+        ThemeManager.Library.Options.ThemeManager_CustomThemeList,
+        ThemeManager.Library.Options.ThemeManager_CustomThemeName
+
+    local function UpdateTheme()
+        ThemeManager:ThemeUpdate()
+    end
+
+    BackgroundColor:OnChanged(UpdateTheme)
+    MainColor:OnChanged(UpdateTheme)
+    AccentColor:OnChanged(UpdateTheme)
+    OutlineColor:OnChanged(UpdateTheme)
+    FontColor:OnChanged(UpdateTheme)
+
+    ThemeManager:ApplyTheme("默认")
+    ThemeManager:SaveDefault("默认")
+
+    ThemeManager.AppliedToTab = true
+    RefreshDefaultThemeLabel()
+
+    return Themesbox
+end
+
+function ThemeManager:CreateGroupBox(Tab: any, IconName: string)
+    return Tab:AddLeftGroupbox("主题", nil, nil, false)
+end
+
+function ThemeManager:ApplyToTab(Tab: any, IconName: string)
+    local Groupbox = ThemeManager:CreateGroupBox(Tab, IconName)
+    return ThemeManager:CreateThemeManager(Groupbox)
+end
+
+function ThemeManager:ApplyToGroupbox(Groupbox: any)
+    return ThemeManager:CreateThemeManager(Groupbox)
+end
+
+getgenv().ObsidianThemeManager = ThemeManager
+return ThemeManager
